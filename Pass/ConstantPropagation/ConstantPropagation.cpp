@@ -29,8 +29,8 @@ namespace
 struct ConstantPropagation : public FunctionPass
 {
   static char ID;
-  int i = 1;
-  std::vector<llvm::Instruction*> instructions;
+  int i = 0;
+  std::vector<int> instructions;
   ConstantPropagation() : FunctionPass(ID) {}
 
   bool runOnFunction(llvm::Function &F) override {
@@ -38,23 +38,23 @@ struct ConstantPropagation : public FunctionPass
       llvm::errs() << "-----" << BB.getName() << "-----" << "\n"; 
 
       for (llvm::Instruction &I : BB) {
+	i = i + 1;
         if (llvm::BinaryOperator *BO = llvm::dyn_cast<llvm::BinaryOperator>(&I)) {
           if (BO->getOpcode() == llvm::Instruction::Add ||
               BO->getOpcode() == llvm::Instruction::Sub ||
               BO->getOpcode() == llvm::Instruction::Mul ||
               BO->getOpcode() == llvm::Instruction::SDiv) {
 	    // a binary operator has this form: s = A op B
-            instructions.push_back(&I);
+            instructions.push_back(i);
           }
         }
         if (llvm::isa<llvm::LoadInst>(&I) ||   // Load instruction (s = *A, where A is an existing value)
           llvm::isa<llvm::AllocaInst>(&I)) {   // Allocation instruction (s = alloca, used when new value is declared)
-          instructions.push_back(&I);  
+          instructions.push_back(i);  
         }
       }
-      for (llvm::Instruction* inst : instructions) {
-        llvm::errs() << i << ": " << "\n";
-        i = i + 1;
+      for (int instID : instructions) {
+        llvm::errs() << instID << ": " << "\n";
       }
     }
 
