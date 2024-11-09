@@ -53,7 +53,7 @@ struct ConstantPropagation : public FunctionPass
         }
       }
       for (llvm::Instruction* inst : instructions) {
-        llvm::errs() << i << ": " << *inst << "\n";
+        llvm::errs() << i << ": " << "\n";
         i = i + 1;
       }
     }
