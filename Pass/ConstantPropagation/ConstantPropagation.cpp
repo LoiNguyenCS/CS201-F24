@@ -13,18 +13,15 @@
 #include <map>
 #include <set>
 #include <queue>
-
-#include "llvm/IR/InstrTypes.h"
+#include <cmath>
 
 using namespace llvm;
 using namespace std;
 
-#define DEBUG_TYPE "ReachingDefinition"
+#define DEBUG_TYPE "ConstantPropagation"
 
 namespace
 {
-
-
 
 struct ConstantPropagation : public FunctionPass
 {
@@ -32,115 +29,114 @@ struct ConstantPropagation : public FunctionPass
     int i = 0;
 
     // Map to track instruction indices and the corresponding LHS variables with their computed values
-    std::map<int, std::map<Value*, int>> instructionValues;
+    std::map<int, std::map<Value*, double>> instructionValues;
 
+    // Set to track inactive (unreachable) basic blocks
+    std::set<BasicBlock*> inactiveBlocks;
 
-    ConstantPropagation() :
-
-        FunctionPass(ID) {}
+    ConstantPropagation() : FunctionPass(ID) {}
 
     bool runOnFunction(llvm::Function &F) override {
         for (llvm::BasicBlock &BB : F) {
             llvm::errs() << "-----" << BB.getName() << "-----" << "\n";
 
+            if (inactiveBlocks.find(&BB) != inactiveBlocks.end()) {
+                // Print the name of the inactive block
+                llvm::errs() << "Skipping inactive block: " << BB.getName() << "\n";
+                continue;
+            }
+
             for (llvm::Instruction &I : BB) {
                 i = i + 1;
-                // Map the instruction index to the LHS variable and its computed value
-                std::map<Value*, int> lhsValues;
+                std::map<Value*, double> lhsValues;
 
                 if (llvm::BinaryOperator *BO = llvm::dyn_cast<llvm::BinaryOperator>(&I)) {
                     if (BO->getOpcode() == llvm::Instruction::Add ||
                             BO->getOpcode() == llvm::Instruction::Sub ||
                             BO->getOpcode() == llvm::Instruction::Mul ||
                             BO->getOpcode() == llvm::Instruction::SDiv) {
-                        // a binary operator has this form: s = A op B
-                        int result = evaluateBinaryOperation(BO);
+                        double result = evaluateBinaryOperation(BO);
                         lhsValues[BO] = result;
                     }
                 }
 
                 if (llvm::isa<llvm::LoadInst>(&I)) {
                     llvm::LoadInst *LI = llvm::cast<llvm::LoadInst>(&I);
-
-                    // If the loaded value is a constant, we can directly store it
                     if (llvm::ConstantInt *C = llvm::dyn_cast<llvm::ConstantInt>(LI->getOperand(0))) {
-                        lhsValues[LI] = C->getSExtValue();
+                        lhsValues[LI] = (double)C->getSExtValue();
                     } else {
-                        // If the loaded value is not a constant, check if it's a variable
-                        Value *loadedLocation = LI->getOperand(0);  // Get the variable being loaded
-
-                        // Look for the value of the variable in instructionValues
-                        int value = 0;  // Default value if the variable is not found
-                        for (const auto& entry : instructionValues) {
-                            auto it = entry.second.find(loadedLocation);
-                            if (it != entry.second.end()) {
-                                value = it->second;  // If found, use the stored value
-                                break;
-                            }
-                        }
-
-                        // Store the value of the variable in the instructionValues map
+                        Value *loadedLocation = LI->getOperand(0);
+                        double value = getOperandValue(loadedLocation);
                         lhsValues[LI] = value;
                     }
                 }
 
-
-
-
                 if (llvm::isa<llvm::AllocaInst>(&I)) {
-                    lhsValues[&I] = 0;
+                    lhsValues[&I] = std::nan("1");
                 }
 
                 if (llvm::isa<llvm::StoreInst>(&I)) {
                     llvm::StoreInst *SI = llvm::cast<llvm::StoreInst>(&I);
-
-                    // The value being stored is the operand to the store instruction
                     Value *storedValue = SI->getValueOperand();
 
                     if (llvm::ConstantInt *C = llvm::dyn_cast<llvm::ConstantInt>(storedValue)) {
-                        // We need to update the value of the variable being written to
                         Value *storedLocation = SI->getPointerOperand();
-
-                        // We don't add StoreInst to the map, but we update the value of the variable in the map
-                        // Now, we need to search for the variable in the instructionValues map
                         for (auto& entry : instructionValues) {
-                            // Check if the storedLocation matches the LHS variable in this instruction's map
                             auto it = entry.second.find(storedLocation);
                             if (it != entry.second.end()) {
-                                // We found the variable, so we update its value
-                                it->second = C->getSExtValue();
-                                break;  // Once updated, we can exit the loop as we've found and updated the value
+                                it->second = (double)C->getSExtValue();
+                                break;
                             }
                         }
                     }
                 }
 
+                // Process comparison instructions
+                if (llvm::ICmpInst *ICI = llvm::dyn_cast<llvm::ICmpInst>(&I)) {
+                    double LHS = getOperandValue(ICI->getOperand(0));
+                    double RHS = getOperandValue(ICI->getOperand(1));
 
+                    if (!std::isnan(LHS) && !std::isnan(RHS)) {
+                        if (evaluateComparison(ICI)) {
+                            llvm::BasicBlock *ElseBB = ICI->getParent()->getTerminator()->getSuccessor(1);
+                            inactiveBlocks.insert(ElseBB);
+                        } else {
+                            llvm::BasicBlock *ThenBB = ICI->getParent()->getTerminator()->getSuccessor(0);
+                            inactiveBlocks.insert(ThenBB);  // Mark the 'then' block as inactive
+                        }
+                    }
+                }
+
+                // Record computed values for each instruction
                 if (!lhsValues.empty()) {
                     instructionValues[i] = lhsValues;
                 }
             }
 
-
+            // Output the final results (values for each instruction)
             for (const auto& entry : instructionValues) {
-                llvm::errs() << entry.first << ": ";
                 for (const auto& lhsEntry : entry.second) {
-                    llvm::errs() << "[" << *lhsEntry.first << "]: " << lhsEntry.second << " ";
+                    if (!std::isnan(lhsEntry.second)) {
+                        llvm::errs() << entry.first << ": ";
+                        llvm::errs() << "[" << *lhsEntry.first << "]: " << (int)lhsEntry.second << " ";
+                        llvm::errs() << "\n";
+                    }
                 }
-                llvm::errs() << "\n";
             }
         }
+
         return false;
     }
 
 private:
-    // Helper function to evaluate binary operations
-    int evaluateBinaryOperation(llvm::BinaryOperator *BO) {
-        // Try to evaluate operands dynamically
-        int result = 0;
 
-        int Op0Val = getOperandValue(BO->getOperand(0)); // Get value of first operand
-        int Op1Val = getOperandValue(BO->getOperand(1)); // Get value of second operand
+    // Helper function to evaluate binary operations
+    double evaluateBinaryOperation(llvm::BinaryOperator *BO) {
+        // Try to evaluate operands dynamically
+        double result = 0;
+
+        double Op0Val = getOperandValue(BO->getOperand(0)); // Get value of first operand
+        double Op1Val = getOperandValue(BO->getOperand(1)); // Get value of second operand
 
         switch (BO->getOpcode()) {
         case llvm::Instruction::Add:
@@ -161,32 +157,56 @@ private:
         return result;
     }
 
-    // Helper function to get the value of an operand from the map
-    int getOperandValue(Value *V) {
-        // If the operand is a constant integer, return its value
+    // Helper function to evaluate integer comparison operations (ICmpInst)
+    bool evaluateComparison(llvm::ICmpInst *ICI) {
+        // Get the operands (LHS and RHS) of the comparison
+        double LHS = getOperandValue(ICI->getOperand(0));
+        double RHS = getOperandValue(ICI->getOperand(1));
+
+        // Determine the comparison result based on the operator
+        switch (ICI->getPredicate()) {
+        case llvm::ICmpInst::ICMP_EQ:
+            return LHS == RHS;  // Equal
+        case llvm::ICmpInst::ICMP_NE:
+            return LHS != RHS;  // Not equal
+        case llvm::ICmpInst::ICMP_SLT:
+            return LHS < RHS;   // Less than
+        case llvm::ICmpInst::ICMP_SLE:
+            return LHS <= RHS;  // Less than or equal
+        case llvm::ICmpInst::ICMP_SGT:
+            return LHS > RHS;   // Greater than
+        case llvm::ICmpInst::ICMP_SGE:
+            return LHS >= RHS;  // Greater than or equal
+        default:
+            // Unsupported comparison predicate
+            return false;
+        }
+    }
+
+    // Helper function to get the value of an operand (for integer values)
+    double getOperandValue(Value *V) {
         if (llvm::ConstantInt *CI = llvm::dyn_cast<llvm::ConstantInt>(V)) {
-            return CI->getSExtValue();
+            return (double)CI->getSExtValue();
         }
 
-        // If the operand is a variable that we have already seen (i.e., it's in the map)
+        // If the operand is an instruction, check if it has been evaluated
         if (llvm::isa<llvm::Instruction>(V)) {
             for (const auto& entry : instructionValues) {
                 auto it = entry.second.find(V);
                 if (it != entry.second.end()) {
-                    return it->second;  // Return the computed value from the map
+                    return it->second;
                 }
             }
         }
 
-        // If the operand is not found, return 0 (unknown value)
-        return 0;
+        return std::nan("1");  // Use NaN to indicate an unknown value;
     }
+};
 
-
-}; // end of struct ReachingDefinition
 } // end of anonymous namespace
 
 char ConstantPropagation::ID = 0;
 static RegisterPass<ConstantPropagation> X("ConstantPropagation", "Constant Propagation Pass",
         false /* Only looks at CFG */,
         true /* Analysis Pass */);
+
