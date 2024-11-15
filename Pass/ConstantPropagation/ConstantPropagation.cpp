@@ -39,15 +39,17 @@ struct ConstantPropagation : public FunctionPass
     bool runOnFunction(llvm::Function &F) override {
         for (llvm::BasicBlock &BB : F) {
             llvm::errs() << "-----" << BB.getName() << "-----" << "\n";
+            bool isActiveBlock = false;
 
             if (inactiveBlocks.find(&BB) != inactiveBlocks.end()) {
-                // Print the name of the inactive block
-                llvm::errs() << "Skipping inactive block: " << BB.getName() << "\n";
-                continue;
+                isActiveBlock = true;
             }
 
             for (llvm::Instruction &I : BB) {
                 i = i + 1;
+                if (isActiveBlock) {
+                    continue;
+                }
                 std::map<Value*, double> lhsValues;
 
                 if (llvm::BinaryOperator *BO = llvm::dyn_cast<llvm::BinaryOperator>(&I)) {
@@ -78,13 +80,22 @@ struct ConstantPropagation : public FunctionPass
                 if (llvm::isa<llvm::StoreInst>(&I)) {
                     llvm::StoreInst *SI = llvm::cast<llvm::StoreInst>(&I);
                     Value *storedValue = SI->getValueOperand();
-
+                    Value *storedLocation = SI->getPointerOperand();
                     if (llvm::ConstantInt *C = llvm::dyn_cast<llvm::ConstantInt>(storedValue)) {
-                        Value *storedLocation = SI->getPointerOperand();
                         for (auto& entry : instructionValues) {
                             auto it = entry.second.find(storedLocation);
                             if (it != entry.second.end()) {
                                 it->second = (double)C->getSExtValue();
+                                break;
+                            }
+                        }
+                    }
+                    else {
+                        double value = getOperandValue(storedValue);
+                        for (auto& entry : instructionValues) {
+                            auto it = entry.second.find(storedLocation);
+                            if (it != entry.second.end()) {
+                                it->second = value;
                                 break;
                             }
                         }
@@ -111,6 +122,9 @@ struct ConstantPropagation : public FunctionPass
                 if (!lhsValues.empty()) {
                     instructionValues[i] = lhsValues;
                 }
+            }
+            if (isActiveBlock) {
+                continue;
             }
 
             // Output the final results (values for each instruction)
