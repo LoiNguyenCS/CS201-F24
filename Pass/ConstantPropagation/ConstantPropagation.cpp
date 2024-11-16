@@ -34,8 +34,10 @@ struct ConstantPropagation : public FunctionPass {
     bool runOnFunction(Function &F) override {
         int instructionIndex = 0;
         for (BasicBlock &BB : F) {
+            // printBlockValues(&BB);
             handleBranchMerging(&BB); // Merge branch values for the block
-
+            // errs() << "After merging " << "\n";
+            // printBlockValues(&BB);
             bool isActiveBlock = inactiveBlocks.find(&BB) == inactiveBlocks.end();
             std::map<int, std::map<Value*, double>> instructionValues; // Local instruction values for this block
             instructionValues = blockValues[&BB];
@@ -128,14 +130,25 @@ private:
 
         std::map<int, std::map<Value*, double>> mergedValues;
         bool firstPredecessor = true;
-
+        errs() << "For block: " << BB->getName() << "\n";
+        errs() << "Preds are: " << "\n";
         for (auto predBB : predecessors(BB)) {
+            // below code will set the value of mergedValues equal to first visited predecessor before comparing with other predecessors. This approach will fail if the first predecessor is uninitialized.
+            bool unInitialized = blockValues.find(predBB) == blockValues.end();
+            if (unInitialized) {
+                continue;
+            }
+
+            errs() << predBB -> getName() << "\n";
             const auto &predValues = blockValues[predBB];
 
             for (const auto &instEntry : predValues) {
                 int instIdx = instEntry.first;
 
                 if (firstPredecessor) {
+                    // errs()<<"Regarding block " << BB -> getName() << "\n";
+                    // errs()<<"First predecessor is: " << predBB -> getName() << "\n";
+                    //printBlockValues(predBB);
                     mergedValues[instIdx] = instEntry.second;
                 } else {
                     // For subsequent predecessors, compare values and handle conflicts
