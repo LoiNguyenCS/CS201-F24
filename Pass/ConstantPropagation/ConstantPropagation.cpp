@@ -35,8 +35,6 @@ struct ConstantPropagation : public FunctionPass {
         int instructionIndex = 0;
         for (BasicBlock &BB : F) {
             handleBranchMerging(&BB); // Merge branch values for the block
-            errs() << "After merging block: " << BB.getName() << "\n";
-            printBlockValues(&BB);
 
             bool isActiveBlock = inactiveBlocks.find(&BB) == inactiveBlocks.end();
             std::map<int, std::map<Value*, double>> instructionValues; // Local instruction values for this block
@@ -111,9 +109,9 @@ struct ConstantPropagation : public FunctionPass {
                 }
                 blockValues[&BB] = instructionValues; // Store instruction values for this block
             }
-            errs() << "After processing block: " << BB.getName() << "\n";
-            printBlockValues(&BB);
-       
+            // errs() << "After processing block: " << BB.getName() << "\n";
+            // printBlockValues(&BB);
+
         }
 
         // Print final values for all active blocks
