@@ -29,6 +29,14 @@ struct ConstantPropagation : public FunctionPass {
     // Map to track values associated with each basic block's instruction indices
     std::map<BasicBlock*, std::map<int, std::map<Value*, double>>> blockValues;
 
+    // Lattice definition implicitly applied here:
+    // - `any`: Represented by std::nan or uninitialized.
+    // - `constant`: Represented by integer values.
+    // - `not a constant`: Represented by a combination of std::nan and membership in `definitelyNotConstant`.
+    // Note: There are definitely better ways to implement lattices.
+    // The current implementation is chosen due to the rusty C skill of the author.
+    std::set<Value*> definitelyNotConstant;
+
     ConstantPropagation() : FunctionPass(ID) {}
 
     bool runOnFunction(Function &F) override {
@@ -118,7 +126,7 @@ struct ConstantPropagation : public FunctionPass {
 
         // Print final values for all active blocks
         printActiveBlockValues();
-
+        printNotAConstantValues();
         return false;
     }
 
@@ -156,6 +164,11 @@ private:
                         Value *var = varEntry.first;
                         double predValue = varEntry.second;
 
+                        // Not-a-constant /\ anything = Not-a-constant
+                        if (definitelyNotConstant.find(var) != definitelyNotConstant.end()) {
+                            continue;
+                        }
+
                         // Check if the variable already exists in mergedValues
                         auto it = mergedValues.find(instIdx);
                         if (it != mergedValues.end()) {
@@ -168,6 +181,7 @@ private:
                             } else if (!std::isnan(predValue) && mergedValue != predValue) {
                                 // If there's a conflict, set the value to NaN
                                 mergedValue = std::nan("1");
+                                definitelyNotConstant.insert(var); // Mark variable as non-constant
                             }
                         }
                     }
@@ -194,6 +208,21 @@ private:
             }
         }
     }
+
+    void printNotAConstantValues() {
+    errs() << "----- Not-A-Constant Values -----\n";
+    for (Value *V : definitelyNotConstant) {
+        errs() << "Value: ";
+        if (V->hasName()) {
+            errs() << V->getName();
+        } else {
+            V->print(errs());
+        }
+        errs() << "\n";
+    }
+    errs() << "---------------------------------\n";
+}
+
     double evaluateBinaryOperation(BinaryOperator *BO) {
         double Op0Val = getOperandValue(BO->getParent(), BO->getOperand(0));
         double Op1Val = getOperandValue(BO->getParent(), BO->getOperand(1));
