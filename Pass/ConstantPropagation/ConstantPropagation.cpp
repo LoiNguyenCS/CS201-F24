@@ -254,12 +254,12 @@ private:
         for (const auto &blockEntry : blockValues) {
             BasicBlock *BB = blockEntry.first;
 
-            // Only print active blocks
+            errs() << "-----" << BB->getName() << "-----" << "\n";
+
             if (inactiveBlocks.find(BB) != inactiveBlocks.end()) {
                 continue;
             }
 
-            errs() << "-----" << BB->getName() << "-----" << "\n";
             const auto &blockInstrValues = blockEntry.second;
             for (const auto &instEntry : blockInstrValues) {
                 int instIdx = instEntry.first;
