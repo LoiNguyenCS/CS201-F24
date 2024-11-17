@@ -159,7 +159,7 @@ struct ConstantPropagation : public FunctionPass {
         for (BasicBlock &BB : F) {
             printBlockValues(&BB);
         }
-        printNotAConstantValues();
+        // printNotAConstantValues();
         return false;
     }
 
@@ -167,12 +167,31 @@ private:
 
     void handleBranchMerging(BasicBlock *BB) {
         if (pred_begin(BB) == pred_end(BB)) return; // Entry block (no predecessors)
-
+        bool isWhileCond = false;
+        if (BB->getName() == "while.cond") {
+            // isWhileCond = true;
+        }
+        if (isWhileCond) {
+            errs()<<"Before merging while.cond: " << "\n";
+            printBlockValues(BB);
+        }
 
         std::map<int, std::map<Value*, double>> mergedValues;
         bool firstPredecessor = true;
         // errs() << "For block: " << BB->getName() << "\n";
         // errs() << "Preds are: " << "\n";
+        int blockLastIndex;
+        if (blockAndItsLastIndex.find(BB) != blockAndItsLastIndex.end()) {
+            // Block exists in the map; use its value
+            blockLastIndex = blockAndItsLastIndex[BB];
+        } else {
+            // Block does not exist; initialize to maximum number
+            blockLastIndex = 10000;
+        }
+        if (isWhileCond) {
+            errs()<<blockLastIndex<<"\n";
+        }
+
         for (auto predBB : predecessors(BB)) {
             // below code will set the value of mergedValues equal to first visited predecessor before comparing with other predecessors. This approach will fail if the first predecessor is uninitialized.
             bool unInitialized = blockValues.find(predBB) == blockValues.end();
@@ -183,12 +202,16 @@ private:
                 continue;
             }
 
-            // errs() << predBB -> getName() << "\n";
+            // errs() << "predBlock is: " << "\n";
+            // printBlockValues(predBB);
             const auto &predValues = blockValues[predBB];
 
             for (const auto &instEntry : predValues) {
                 int instIdx = instEntry.first;
-
+                // which means that predBB -> BB is a back edge.
+                if (instIdx > blockLastIndex) {
+                    break;
+                }
                 if (firstPredecessor) {
                     // errs()<<"Regarding block " << BB -> getName() << "\n";
                     // errs()<<"First predecessor is: " << predBB -> getName() << "\n";
@@ -223,31 +246,46 @@ private:
             // After processing the first predecessor, set the flag to false
             firstPredecessor = false;
         }
+        if (isWhileCond) {
+            errs()<<"After merging while.cond: " << "\n";
+            printBlockValues(BB);
+            errs()<<"---------------------------"<< "\n";
+        }
 
         // Update the current block with the merged values
         blockValues[BB] = mergedValues;
     }
 
     void printBlockValues(BasicBlock *BB) {
-        errs() << "Block: " << BB->getName() << "\n";
+        errs() << "-----" << BB->getName() << "-----" << "\n";
         const auto &blockInstrValues = blockValues[BB];
-        int lastIndex = blockAndItsLastIndex[BB];
-        errs() << "Last index: " << lastIndex << "\n";
+        int lastIndex;
+        if (inactiveBlocks.find(BB) != inactiveBlocks.end()) {
+            return;
+        }
+        if (blockAndItsLastIndex.find(BB) != blockAndItsLastIndex.end()) {
+            // Block exists in the map; use its value
+            lastIndex = blockAndItsLastIndex[BB];
+        } else {
+            // Block does not exist; initialize to maximum number
+            lastIndex = std::numeric_limits<int>::max();
+        }
+        //errs() << "Last index: " << lastIndex << "\n";
         for (const auto &instEntry : blockInstrValues) {
             int instIdx = instEntry.first;
             if (instIdx > lastIndex) {
-                errs() << "Reached last index" << "\n";
+                //errs() << "Reached last index" << "\n";
                 return;
             }
             for (const auto &varEntry : instEntry.second) {
                 if (!std::isnan(varEntry.second)) {
-                    errs() << "  Inst " << instIdx << ": " << *varEntry.first << " = ";
+                    errs() << instIdx << ": ";
                     errs() << (int)varEntry.second << "\n";
                 }
-                else {
-                    errs() << "  Inst " << instIdx << ": " << *varEntry.first << " = ";
-                    errs() << "NAN" << "\n";
-                }
+                //else {
+                //errs() << "  Inst " << instIdx << ": " << *varEntry.first << " = ";
+                //  errs() << "NAN" << "\n";
+                //}
             }
         }
     }
