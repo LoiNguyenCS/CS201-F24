@@ -144,6 +144,11 @@ struct ConstantPropagation : public FunctionPass {
                     //  errs() << "Block: " << BB.getName() << "\n";
                 }
             }
+	    // Heuristic approach: Since loops can be nested, the runtime iterations required
+	    // should correspond to the most deeply nested loop. But let’s be real—no sane person
+            // writes a 5-level nested loop. Limiting `i` to 5 iterations should handle most
+            // reasonable cases. This approach is not theoretically safe though.
+
             if ( i < 5) {
                 i = i + 1;
                 isFixedPoint = false;
