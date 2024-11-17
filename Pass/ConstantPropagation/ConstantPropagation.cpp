@@ -29,6 +29,9 @@ struct ConstantPropagation : public FunctionPass {
     // Map to track values associated with each basic block's instruction indices
     std::map<BasicBlock*, std::map<int, std::map<Value*, double>>> blockValues;
 
+    // Map a block to the index of the last instruction in that block
+    std::map<BasicBlock*, int> blockAndItsLastIndex;
+
     // Lattice definition implicitly applied here:
     // - `any`: Represented by std::nan or uninitialized.
     // - `constant`: Represented by integer values.
@@ -40,92 +43,122 @@ struct ConstantPropagation : public FunctionPass {
     ConstantPropagation() : FunctionPass(ID) {}
 
     bool runOnFunction(Function &F) override {
-        int instructionIndex = 0;
-        for (BasicBlock &BB : F) {
-            // printBlockValues(&BB);
-            handleBranchMerging(&BB); // Merge branch values for the block
-            // errs() << "After merging " << "\n";
-            // printBlockValues(&BB);
-            bool isActiveBlock = inactiveBlocks.find(&BB) == inactiveBlocks.end();
-            std::map<int, std::map<Value*, double>> instructionValues; // Local instruction values for this block
-            instructionValues = blockValues[&BB];
-            for (Instruction &I : BB) {
-                instructionIndex++;
-                // errs() << "  Visiting instruction " << instructionIndex << ": " << I << "\n";
-                if (!isActiveBlock) continue;
+        bool hasChanged = false;
+        bool isFixedPoint = false;
+        int i = 1;
 
-                std::map<Value*, double> lhsValues;
-
-                if (auto *BO = dyn_cast<BinaryOperator>(&I)) {
-                    if (BO->getOpcode() == Instruction::Add ||
-                            BO->getOpcode() == Instruction::Sub ||
-                            BO->getOpcode() == Instruction::Mul ||
-                            BO->getOpcode() == Instruction::SDiv) {
-                        double result = evaluateBinaryOperation(BO);
-                        lhsValues[BO] = result;
+        while (!isFixedPoint) {
+            int instructionIndex = 0;
+            // errs() <<"Fixed point is false" << "\n";
+            // errs()<< "Value of i is: " << i << "\n";
+            isFixedPoint = true;
+            for (BasicBlock &BB : F) {
+                //printBlockValues(&BB);
+                handleBranchMerging(&BB); // Merge branch values for the block
+                //errs() << "After merging " << "\n";
+                //printBlockValues(&BB);
+                bool isActiveBlock = inactiveBlocks.find(&BB) == inactiveBlocks.end();
+                std::map<int, std::map<Value*, double>> instructionValues; // Local instruction values for this block
+                instructionValues = blockValues[&BB];
+                for (Instruction &I : BB) {
+                    instructionIndex++;
+                    // errs() << "  Visiting instruction " << instructionIndex << ": " << I << "\n";
+                    if (!isActiveBlock) {
+                        //           errs() << "Inactive blocks: " << BB.getName() << "\n";
+                        continue;
                     }
-                }
 
-                if (auto *LI = dyn_cast<LoadInst>(&I)) {
-                    Value *loadedLocation = LI->getOperand(0);
-                    double value = getOperandValue(&BB, loadedLocation);
-                    lhsValues[LI] = value;
-                }
+                    std::map<Value*, double> lhsValues;
 
-                if (isa<AllocaInst>(&I)) {
-                    lhsValues[&I] = std::nan("1");
-                }
+                    if (auto *BO = dyn_cast<BinaryOperator>(&I)) {
+                        if (BO->getOpcode() == Instruction::Add ||
+                                BO->getOpcode() == Instruction::Sub ||
+                                BO->getOpcode() == Instruction::Mul ||
+                                BO->getOpcode() == Instruction::SDiv) {
+                            double result = evaluateBinaryOperation(BO);
+                            lhsValues[BO] = result;
+                        }
+                    }
 
-                if (llvm::isa<llvm::StoreInst>(&I)) {
-                    llvm::StoreInst *SI = llvm::cast<llvm::StoreInst>(&I);
-                    Value *storedValue = SI->getValueOperand();
-                    Value *storedLocation = SI->getPointerOperand();
-                    if (llvm::ConstantInt *C = llvm::dyn_cast<llvm::ConstantInt>(storedValue)) {
-                        for (auto& entry : instructionValues) {
-                            auto it = entry.second.find(storedLocation);
-                            if (it != entry.second.end()) {
-                                it->second = (double)C->getSExtValue();
-                                break;
+                    if (auto *LI = dyn_cast<LoadInst>(&I)) {
+                        Value *loadedLocation = LI->getOperand(0);
+                        double value = getOperandValue(&BB, loadedLocation);
+                        lhsValues[LI] = value;
+                    }
+
+                    if (isa<AllocaInst>(&I)) {
+                        lhsValues[&I] = std::nan("1");
+                    }
+
+                    if (llvm::isa<llvm::StoreInst>(&I)) {
+                        llvm::StoreInst *SI = llvm::cast<llvm::StoreInst>(&I);
+                        Value *storedValue = SI->getValueOperand();
+                        Value *storedLocation = SI->getPointerOperand();
+                        if (llvm::ConstantInt *C = llvm::dyn_cast<llvm::ConstantInt>(storedValue)) {
+                            for (auto& entry : instructionValues) {
+                                auto it = entry.second.find(storedLocation);
+                                if (it != entry.second.end()) {
+                                    it->second = (double)C->getSExtValue();
+                                    break;
+                                }
+                            }
+                        }
+                        else {
+                            double value = getOperandValue(&BB, storedValue);
+                            for (auto& entry : instructionValues) {
+                                auto it = entry.second.find(storedLocation);
+                                if (it != entry.second.end()) {
+                                    it->second = value;
+                                    break;
+                                }
                             }
                         }
                     }
-                    else {
-                        double value = getOperandValue(&BB, storedValue);
-                        for (auto& entry : instructionValues) {
-                            auto it = entry.second.find(storedLocation);
-                            if (it != entry.second.end()) {
-                                it->second = value;
-                                break;
+
+                    if (auto *ICI = dyn_cast<ICmpInst>(&I)) {
+                        double LHS = getOperandValue(&BB, ICI->getOperand(0));
+                        double RHS = getOperandValue(&BB, ICI->getOperand(1));
+
+                        if (!std::isnan(LHS) && !std::isnan(RHS)) {
+                            if (evaluateComparison(ICI)) {
+                                if (BB.getName() != "while.cond") {
+
+                                    inactiveBlocks.insert(ICI->getParent()->getTerminator()->getSuccessor(1));
+                                }
+                            } else {
+                                inactiveBlocks.insert(ICI->getParent()->getTerminator()->getSuccessor(0));
                             }
                         }
                     }
-                }
-
-                if (auto *ICI = dyn_cast<ICmpInst>(&I)) {
-                    double LHS = getOperandValue(&BB, ICI->getOperand(0));
-                    double RHS = getOperandValue(&BB, ICI->getOperand(1));
-
-                    if (!std::isnan(LHS) && !std::isnan(RHS)) {
-                        if (evaluateComparison(ICI)) {
-                            inactiveBlocks.insert(ICI->getParent()->getTerminator()->getSuccessor(1));
-                        } else {
-                            inactiveBlocks.insert(ICI->getParent()->getTerminator()->getSuccessor(0));
-                        }
+                    if (!lhsValues.empty()) {
+                        instructionValues[instructionIndex] = lhsValues;
                     }
-                }
 
-                if (!lhsValues.empty()) {
-                    instructionValues[instructionIndex] = lhsValues;
+                    blockValues[&BB] = instructionValues; // Store instruction values for this block
                 }
-                blockValues[&BB] = instructionValues; // Store instruction values for this block
+                blockAndItsLastIndex[&BB] = instructionIndex;
+                // errs() << "At the end: " << "\n";
+                if (isActiveBlock) {
+                    //    printBlockValues(&BB);
+                } else {
+                    //  errs() << "Block: " << BB.getName() << "\n";
+                }
+            }
+            if ( i < 5) {
+                i = i + 1;
+                isFixedPoint = false;
+            }
+            else {
+                isFixedPoint = true;
             }
             // errs() << "After processing block: " << BB.getName() << "\n";
             // printBlockValues(&BB);
 
         }
 
-        // Print final values for all active blocks
-        printActiveBlockValues();
+        for (BasicBlock &BB : F) {
+            printBlockValues(&BB);
+        }
         printNotAConstantValues();
         return false;
     }
@@ -138,16 +171,19 @@ private:
 
         std::map<int, std::map<Value*, double>> mergedValues;
         bool firstPredecessor = true;
-        errs() << "For block: " << BB->getName() << "\n";
-        errs() << "Preds are: " << "\n";
+        // errs() << "For block: " << BB->getName() << "\n";
+        // errs() << "Preds are: " << "\n";
         for (auto predBB : predecessors(BB)) {
             // below code will set the value of mergedValues equal to first visited predecessor before comparing with other predecessors. This approach will fail if the first predecessor is uninitialized.
             bool unInitialized = blockValues.find(predBB) == blockValues.end();
             if (unInitialized) {
                 continue;
             }
+            if (inactiveBlocks.find(predBB) != inactiveBlocks.end()) {
+                continue;
+            }
 
-            errs() << predBB -> getName() << "\n";
+            // errs() << predBB -> getName() << "\n";
             const auto &predValues = blockValues[predBB];
 
             for (const auto &instEntry : predValues) {
@@ -175,10 +211,7 @@ private:
                             // If the variable exists in mergedValues, compare the values
                             double &mergedValue = it->second[var];
 
-                            if (std::isnan(mergedValue)) {
-                                // If it is NaN, we keep the previous value
-                                continue;
-                            } else if (!std::isnan(predValue) && mergedValue != predValue) {
+                            if (!std::isnan(predValue) && mergedValue != predValue) {
                                 // If there's a conflict, set the value to NaN
                                 mergedValue = std::nan("1");
                                 definitelyNotConstant.insert(var); // Mark variable as non-constant
@@ -198,30 +231,40 @@ private:
     void printBlockValues(BasicBlock *BB) {
         errs() << "Block: " << BB->getName() << "\n";
         const auto &blockInstrValues = blockValues[BB];
+        int lastIndex = blockAndItsLastIndex[BB];
+        errs() << "Last index: " << lastIndex << "\n";
         for (const auto &instEntry : blockInstrValues) {
             int instIdx = instEntry.first;
+            if (instIdx > lastIndex) {
+                errs() << "Reached last index" << "\n";
+                return;
+            }
             for (const auto &varEntry : instEntry.second) {
                 if (!std::isnan(varEntry.second)) {
                     errs() << "  Inst " << instIdx << ": " << *varEntry.first << " = ";
                     errs() << (int)varEntry.second << "\n";
+                }
+                else {
+                    errs() << "  Inst " << instIdx << ": " << *varEntry.first << " = ";
+                    errs() << "NAN" << "\n";
                 }
             }
         }
     }
 
     void printNotAConstantValues() {
-    errs() << "----- Not-A-Constant Values -----\n";
-    for (Value *V : definitelyNotConstant) {
-        errs() << "Value: ";
-        if (V->hasName()) {
-            errs() << V->getName();
-        } else {
-            V->print(errs());
+        errs() << "----- Not-A-Constant Values -----\n";
+        for (Value *V : definitelyNotConstant) {
+            errs() << "Value: ";
+            if (V->hasName()) {
+                errs() << V->getName();
+            } else {
+                V->print(errs());
+            }
+            errs() << "\n";
         }
-        errs() << "\n";
+        errs() << "---------------------------------\n";
     }
-    errs() << "---------------------------------\n";
-}
 
     double evaluateBinaryOperation(BinaryOperator *BO) {
         double Op0Val = getOperandValue(BO->getParent(), BO->getOperand(0));
